@@ -1,0 +1,148 @@
+#include <BluetoothSerial.h>  // Librería para Bluetooth
+
+BluetoothSerial SerialBT;
+
+int pinServo = 25;          // Pin conectado al servomotor
+int velocidadActual = 0;    // Velocidad actual del servomotor
+int minVelocidad = 0;       // Velocidad mínima (modo automático)
+int maxVelocidad = 255;     // Velocidad máxima (modo automático)
+int periodo = 2000;         // Periodo en milisegundos para el modo automático
+bool modoManual = true;
+bool tipoWater = true;      // Indica si está en modo manual o automático
+
+void setup() {
+  // Iniciar Bluetooth
+  Serial.begin(115200);
+  SerialBT.begin("Kaowi");  // Nombre del dispositivo Bluetooth
+  pinMode(pinServo, OUTPUT); // Configurar el pin del servomotor como salida
+
+  Serial.println("ESP32 listo para recibir comandos Bluetooth.");
+}
+
+void loop() {
+  if (SerialBT.available()) {
+    String comando = SerialBT.readStringUntil('\n');  // Leer comando enviado desde la app
+    procesarComando(comando);  // Llamar función para procesar el comando recibido
+  }
+
+  // Control del servomotor en modo automático
+  if (!modoManual) {
+    ajustarVelocidadAutomatica();
+  }
+}
+
+void procesarComando(String comando) {
+  if (comando.startsWith("INICIAR")) {
+    iniciarServomotor();
+  } else if (comando.startsWith("DETENER")) {
+    detenerServomotor();
+  } else if (comando.startsWith("RPM:")) {
+    String velStr = comando.substring(4);  // Extraer valor de la velocidad
+    velocidadActual = velStr.toInt();      // Convertir a entero
+    ajustarVelocidad(velocidadActual);
+  } else if (comando == "MANUAL") {
+    modoManual = true;  // Cambiar a modo manual
+    Serial.println("Configurado en Modo Manual");
+  } else if (comando == "AUTOMATICO") {
+    modoManual = false;  // Cambiar a modo automático
+    Serial.println("Configurado en Modo Automático");
+  } else if (comando == "OIL") {
+    tipoWater = false;  // Cambiar a modo automático
+    Serial.println("oil");
+  } else if (comando == "WATER") {
+    tipoWater = true;  // Cambiar a modo automático
+    Serial.println("awa");
+  } else if (comando.startsWith("MIN:")) {
+    String inStr = comando.substring(4);  // Extraer valor de la velocidad
+    minVelocidad = inStr.toInt();  
+    Serial.print("Velocidad min Ajustada a: ");
+    Serial.println(minVelocidad);       // Convertir a entero
+  } else if (comando.startsWith("MAX:")) {
+    String finStr = comando.substring(4);  // Extraer valor de la velocidad
+    maxVelocidad = finStr.toInt();
+    Serial.print("Velocidad max Ajustada a: ");
+    Serial.println(maxVelocidad);      // Convertir a entero
+  } else if (comando.startsWith("T:")) {
+    String perStr = comando.substring(2);  // Extraer valor de la velocidad
+    periodo = perStr.toInt();
+    Serial.print("periodo:");
+    Serial.println(periodo);      // Convertir a entero
+  }
+}
+
+void iniciarServomotor() {
+  digitalWrite(27, HIGH);
+  Serial.println("Servomotor Iniciado");
+}
+
+void detenerServomotor() {
+  digitalWrite(27, LOW);
+  Serial.println("Servomotor Detenido");
+}
+
+void ajustarVelocidad(int velocidad) {
+  analogWrite(pinServo, (int) velocidad * 255 / 3000);  // Ajustar la señal PWM
+  Serial.print("Velocidad Ajustada a: ");
+  Serial.println(velocidad);
+}
+
+void ajustarVelocidadAutomatica() {
+  if (tipoWater) {
+    ajustarVelocidadRampa();
+  } else {
+    ajustarVelocidadSinusoidal();
+  }
+}
+
+// Rampa lineal para "WATER"
+void ajustarVelocidadRampa() {
+  unsigned long tiempoActual = millis() % periodo;  // Tiempo actual dentro del periodo
+
+  // Calcular la fracción de tiempo en el ciclo (de 0 a 1, para escalar la rampa)
+  float fraccionCiclo = (float)tiempoActual / periodo;
+
+  // Interpolar la velocidad entre minVelocidad y maxVelocidad según el tiempo en el ciclo
+  velocidadActual = minVelocidad + (maxVelocidad - minVelocidad) * fraccionCiclo;
+
+  // Aplicar la velocidad calculada
+  ajustarVelocidad(velocidadActual);
+
+  Serial.print("Velocidad Ajustada a: ");
+  Serial.println(velocidadActual);
+}
+
+
+// Sinusoidal para "OIL"
+
+void ajustarVelocidadSinusoidal() {
+  // Calcular los valores máximos y mínimos en bits
+  int maxSignal = (maxVelocidad * 255) / 3000; // Máximo de la señal (en bits)
+  int minSignal = (minVelocidad * 255) / 3000; // Mínimo de la señal (en bits)
+
+  int resolution = 8;      // Resolución del DAC en bits (8 bits = 256 niveles)
+  int dacRange = pow(2, resolution) - 1; // Rango del DAC (0 a 255)
+
+  // Calcular amplitud y offset
+  int amplitude = (maxSignal - minSignal) / 2.0;
+  int offset = (maxSignal + minSignal) / 2.0;
+  float stepTime = (float)periodo / (dacRange + 1);  // Tiempo entre pasos para el período deseado
+
+  // Generar la señal sinusoidal
+  for (int i = 0; i < dacRange; i++) {
+    // Calcular el valor de la señal en función del ángulo
+    float angle = (2.0 * PI * i) / dacRange;  // Ángulo en radianes
+    int signal = offset + amplitude * sin(angle);  // Señal sinusoidal escalada
+
+    // Asegurarse de que el valor esté en el rango del DAC
+    signal = constrain(signal, 0, 255);
+
+    // Escribir el valor al DAC
+    dacWrite(pinServo, signal);
+
+    // Enviar el valor al monitor serie para visualizarlo
+    Serial.println(signal);
+
+    // Esperar antes de escribir el siguiente valor
+    delayMicroseconds(stepTime * 1000);  // Esperar según el tiempo entre pasos
+  }
+}
